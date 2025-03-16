@@ -33,7 +33,7 @@ def detect_sign_language(frame, client):
             ]
         )
       
-        # Parse response (assuming Gemini returns something like "Sign: Hello, Confidence: 0.95")
+        # Parse response (assuming Gemini returns "Sign: Hello, Confidence: 0.95")
         response_text = response.text.strip()
         sign = response_text.split("Sign: ")[1].split(",")[0]
         confidence = float(response_text.split("Confidence: ")[1])
@@ -83,9 +83,12 @@ def main():
         current_time = time.time()
         if current_time - last_processed_time >= process_interval:
             sign, confidence = detect_sign_language(frame, client)
-            prediction_placeholder.write(
-                f"Predicted Sign: {sign} (Confidence: {confidence:.2f})"
-            )
+            if "Error" in sign:
+                prediction_placeholder.error(sign)
+            else:
+                prediction_placeholder.write(
+                    f"Predicted Sign: {sign} (Confidence: {confidence:.2f})"
+                )
             last_processed_time = current_time
       
         # Small delay to prevent overwhelming the interface
