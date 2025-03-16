@@ -72,7 +72,7 @@ def main():
         # Read frame from webcam
         ret, frame = cap.read()
         if not ret:
-            st.error("Failed to caimport streamlit as st
+           st.error("Failed to capture video")
 import cv2
 import numpy as np
 from PIL import Image
