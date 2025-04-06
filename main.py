@@ -1,98 +1,135 @@
 import streamlit as st
 import cv2
-import numpy as np
-from PIL import Image
 import time
-from google import genai
-from google.genai import types
+import base64
+import numpy as np
+import pyttsx3
+import threading
+from groq import Groq
+from PIL import Image
+import tempfile
 from dotenv import load_dotenv
 import os
 
 # Load environment variables
 load_dotenv()
-API_KEY = os.getenv("GEMINI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# Initialize Gemini client (do this once)
-@st.cache_resource
-def get_gemini_client():
-    return genai.Client(api_key=API_KEY)
+# Initialize Groq API client
+client = Groq(api_key=GROQ_API_KEY)
 
-# Function to detect sign language using Gemini API
-def detect_sign_language(frame, client):
-    try:
-        # Convert frame to PIL Image
-        pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-      
-        # Send image to Gemini API
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=[
-                "Identify the sign language gesture shown in this image. "
-                "Return the name of the sign and a confidence score between 0 and 1.",
-                pil_image
-            ]
-        )
-      
-        # Parse response (assuming Gemini returns something like "Sign: Hello, Confidence: 0.95")
-        response_text = response.text.strip()
-        sign = response_text.split("Sign: ")[1].split(",")[0]
-        confidence = float(response_text.split("Confidence: ")[1])
-      
-        return sign, confidence
-  
-    except Exception as e:
-        return f"Error: {str(e)}", 0.0
 
-def main():
-    st.title("Sign Language Translator")
-  
-    # Get Gemini client
-    client = get_gemini_client()
-  
-    # Initialize session state for camera
-    if 'run' not in st.session_state:
-        st.session_state.run = False
-  
-    # Start/Stop button
-    if st.button("Start Camera" if not st.session_state.run else "Stop Camera"):
-        st.session_state.run = not st.session_state.run
-  
-    # Create placeholders for video and prediction
-    video_placeholder = st.empty()
-    prediction_placeholder = st.empty()
-  
-    # Initialize webcam
-    cap = cv2.VideoCapture(0)
-  
-    # Rate limiting for API calls
-    last_processed_time = 0
-    process_interval = 1  # Process every 1 second to avoid API rate limits
-  
-    while st.session_state.run:
-        # Read frame from webcam
+# Function to encode image to base64
+def encode_image(image_path):
+    """Encodes an image to base64 format."""
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode("utf-8")
+
+
+# Function to send image to Groq API and get detected sign
+def detect_sign(image_path):
+    base64_image = encode_image(image_path)
+
+    response = client.chat.completions.create(
+        model="llama-3.2-11b-vision-preview",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text",
+                     "text": "You are an expert sign language detector. Identify the sign in the image and provide a short, clear response with the detected word or phrase only."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                ]
+            }
+        ],
+        temperature=0.7,
+        max_completion_tokens=512
+    )
+
+    return response.choices[0].message.content.strip()
+
+
+# Function for Text-to-Speech output (Reinitialize engine each time)
+def speak_text(text):
+    def run_tts():
+        engine = pyttsx3.init()  # Reinitialize TTS engine every time
+        engine.setProperty('rate', 150)  # Adjust speed
+        engine.say(text)
+        engine.runAndWait()
+
+    tts_thread = threading.Thread(target=run_tts)
+    tts_thread.start()
+
+
+# Streamlit UI
+st.title("🤟 Sign Language Detector")
+st.write("Detect and understand sign language gestures in real-time!")
+
+# Display GIF if it exists
+gif_path = "hand_sign.gif"
+if os.path.exists(gif_path):
+    st.image(gif_path, caption="Sign Language Detection in Progress", use_container_width=True)
+
+# Start video capture button
+start_button = st.button("📷 Start Video Capture")
+
+if start_button:
+    cap = cv2.VideoCapture(0)  # Open webcam
+    frames = []
+    start_time = time.time()
+    duration = 5  # Capture for 5 seconds
+
+    st.write("🎥 Recording for 5 seconds... Perform two different gestures.")
+
+    # Progress bar
+    progress_bar = st.progress(0)
+    frame_count = 0
+
+    while time.time() - start_time < duration:
         ret, frame = cap.read()
         if not ret:
-            st.error("Failed to capture video")
-            break  # Exit loop if frame is not captured
-      
-        # Display the frame
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        video_placeholder.image(frame_rgb, channels="RGB")
-      
-        # Process frame periodically
-        current_time = time.time()
-        if current_time - last_processed_time >= process_interval:
-            sign, confidence = detect_sign_language(frame, client)
-            prediction_placeholder.write(
-                f"Predicted Sign: {sign} (Confidence: {confidence:.2f})"
-            )
-            last_processed_time = current_time
-      
-        # Small delay to prevent overwhelming the interface
-        time.sleep(0.033)  # ~30 fps
-  
-    # Release the webcam when stopped
-    cap.release()
+            st.error("Failed to capture video frame.")
+            break
 
-if __name__ == "__main__":
-    main()
+        # Convert frame to RGB (for Streamlit display)
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Show live video feed
+        st.image(frame_rgb, caption="Live Video Feed", use_container_width=True)
+
+        # Store frames for analysis
+        frames.append(frame)
+        frame_count += 1
+
+        # Update progress bar
+        progress_bar.progress(int((time.time() - start_time) / duration * 100))
+
+    cap.release()
+    st.success("✅ Video capture complete!")
+
+    if len(frames) >= 2:  # Ensure we have enough frames for two gestures
+        detected_signs = []
+
+        for i in range(2):
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_file:
+                # Select two frames (one from the beginning, one from the end)
+                selected_frame = frames[i * len(frames) // 2]
+
+                # Save frame as image
+                Image.fromarray(cv2.cvtColor(selected_frame, cv2.COLOR_BGR2RGB)).save(temp_file.name)
+                temp_file_path = temp_file.name
+
+                # Detect sign from Groq API
+                with st.spinner(f"🔍 Detecting Sign {i + 1}..."):
+                    detected_sign = detect_sign(temp_file_path)
+                    detected_signs.append(detected_sign)
+
+        # Display detected signs
+        st.subheader("🔎 Detected Signs:")
+        for i, sign in enumerate(detected_signs):
+            st.write(f"**Sign {i + 1}:** {sign}")
+
+        # Speak detected signs aloud
+        if detected_signs:
+            speak_text(" and ".join(detected_signs))
+            st.success("🗣️ Text-to-Speech Output Complete!")
