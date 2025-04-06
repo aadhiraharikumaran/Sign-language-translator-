@@ -1,6 +1,7 @@
 streamlit
-opencv-python-headless
+opencv-python
 pillow
 numpy
-google-genai
+groq
 python-dotenv
+pyttsx3
